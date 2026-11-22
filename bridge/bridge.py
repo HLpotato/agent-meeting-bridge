@@ -268,6 +268,12 @@ def main() -> int:
         return 2
 
     repo = Path(config.get("mailbox_dir", str(REPO_ROOT))).expanduser()
+    if not repo.is_absolute():
+        # A relative mailbox_dir is relative to THIS bridge folder, never to
+        # the caller's working directory. (v0.3.1 fix: launched from the repo
+        # root, ".." used to resolve to the repo's parent folder - no git
+        # remote, no in/ - and the bridge idled silently forever.)
+        repo = (HERE / repo).resolve()
     state_path = HERE / "bridge.state.json"
     state = load_json(state_path, {})
 
