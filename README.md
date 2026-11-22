@@ -52,7 +52,7 @@ You need: Python 3.10+, Git, and Claude Code installed and signed in on the comp
 
 1. Click **Use this template → Create a new repository**, set it to **Private**, and clone your new repo onto your computer.
 2. Copy `bridge/bridge.config.example.json` to `bridge/bridge.config.json` and set:
-   - `project_dir` — the folder the worker agent should work in (its files, its context).
+   - `project_dir` — the default folder worker agents work in (its files, its context). A seat in the `agents` table can name its own `project_dir` to work in a different project — see "Several projects, one bridge" below.
    - `agent_command` — normally just `claude`.
    - `mailbox_dir` — leave as `..` (the repo root, where `bridge/` lives).
 3. Give your chair agent access to the same private repo (e.g. Muse with GitHub access), and point it at the chair skill in `skills/chair/SKILL.md`.
@@ -64,6 +64,12 @@ You need: Python 3.10+, Git, and Claude Code installed and signed in on the comp
    ```
 
 6. Watch `status.json` flip to `agent-working`, then read the reply in `out/`. The chair agent can now continue the conversation turn by turn, in front of you.
+
+## Several projects, one bridge
+
+One bridge can serve several projects at once. Each project gets its **own worker seat**: an entry in the config's `agents` table with its own `project_dir`, for example a `claude` seat for one project and a `claude-other-project` seat for another (the example config shows the shape). A seat without its own `project_dir` uses the top-level one. You address a seat by name — `To: claude-other-project` — and each seat keeps its own session and works only in its own folder.
+
+A worker inherits a project from **files, never from another session's memory** — it cannot see what an interactive session on the same project knows. So each project folder should carry a `PROJECT-CONTEXT.md`: a short handover brief (what the project is, how the work flows, the standing rules, where things stand, what is open, what must not break), kept current by whoever works the project day to day. On a seat's first turn, the bridge automatically points the worker at that file before anything else.
 
 ## Safety model
 

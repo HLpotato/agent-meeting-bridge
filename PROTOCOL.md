@@ -9,6 +9,7 @@ A deliberately boring protocol. Boring is what keeps two AI agents and one human
 - **Bridge:** a dumb, trustworthy courier on the worker's computer. Polls the mailbox, runs one worker turn per message, writes replies. It has no opinions and makes no decisions.
 - **Worker agent:** does the discussing/working on its own computer, in its project folder. Replies once per message.
 - **More worker agents (multi-way meetings):** a meeting can seat several worker agents (v1 adapters: Claude Code and Gemini CLI). Each message is addressed to exactly one agent with a `To: <name>` first line (no line = the default agent). Each agent keeps its *own* session and its own context; the chair agent relays between them when their views need to meet — e.g. "Claude proposed X; Gemini, review it" — pasting the relevant text into the next message, because agents do not see each other's replies directly. The reply file records which agent answered (`Agent:` header).
+- **One seat per project (multi-project meetings):** a seat may name its own `project_dir` in the bridge config, so one bridge can seat workers for several projects at once — each seat working only in its own project's folder, with its own session. A worker learns its project from files, never from another session's memory; each project folder should carry a `PROJECT-CONTEXT.md` handover brief, and on a seat's first turn the bridge points the worker at that file automatically.
 
 ## Files
 

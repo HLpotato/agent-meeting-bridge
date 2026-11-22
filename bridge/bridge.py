@@ -59,6 +59,16 @@ def agents_config(config: dict) -> dict:
                        "adapter": "claude"}}
 
 
+def agent_project_dir(config: dict, spec: dict) -> Path:
+    """The folder one agent seat works in (v0.4, multi-project).
+
+    A seat may name its own "project_dir" in the agents table - that is how
+    one bridge serves several projects, one seat per project. A seat with
+    no folder of its own uses the top-level "project_dir", so configs from
+    before v0.4 behave exactly as they did."""
+    return Path(spec.get("project_dir") or config["project_dir"]).expanduser()
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
@@ -79,7 +89,12 @@ def save_json(path: Path, data) -> None:
 
 
 def run(cmd: list[str], cwd: Path, timeout: int | None = None) -> subprocess.CompletedProcess:
-    return subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True, timeout=timeout)
+    # encoding pinned to UTF-8 (v0.3.3): the agent CLIs emit UTF-8, but
+    # Python on Windows would otherwise decode their output with the
+    # console codepage (cp1252) and replies would be written to the
+    # mailbox full of mojibake ("â€"" for an em dash).
+    return subprocess.run(cmd, cwd=str(cwd), capture_output=True, text=True,
+                          encoding="utf-8", errors="replace", timeout=timeout)
 
 
 def git(args: list[str], cwd: Path, check: bool = False) -> subprocess.CompletedProcess:
@@ -199,6 +214,7 @@ def run_agent_cmd(cmd: list[str], cwd: Path, timeout: int,
     """Run an agent CLI with a hard, tree-killing timeout."""
     proc = subprocess.Popen(cmd, cwd=str(cwd), stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True,
+                            encoding="utf-8", errors="replace",
                             start_new_session=(os.name != "nt"))
     try:
         out, err = proc.communicate(timeout=timeout)
@@ -242,7 +258,7 @@ def call_agent(config: dict, agent_name: str, prompt: str,
     if session_id:
         cmd += ["--conversation", session_id] if adapter == "agy" else ["--resume", session_id]
     timeout = int(config.get("turn_timeout_seconds", 1800))
-    result = run_agent_cmd(cmd, cwd=Path(config["project_dir"]).expanduser(),
+    result = run_agent_cmd(cmd, cwd=agent_project_dir(config, spec),
                            timeout=timeout, agent_name=agent_name)
     if result.returncode != 0:
         raise RuntimeError(f"{agent_name} command exited {result.returncode}: {result.stderr.strip()[:500]}")
@@ -320,6 +336,21 @@ def process_one(repo: Path, config: dict, state: dict, state_path: Path,
     session_id = sessions.get(agent_name)
     if session_id is None and agent_name == "claude":
         session_id = state.get("session_id")  # legacy single-agent state
+    if session_id is None:
+        # First turn of a fresh session for this seat (v0.4): if the seat's
+        # project folder carries a PROJECT-CONTEXT.md handover brief, point
+        # the worker at it before anything else. A worker inherits a
+        # project from files, never from another session's memory - the
+        # brief is how the knowledge moves. Later turns of the session
+        # already hold the context, so this is prepended once only.
+        spec = agents_config(config).get(agent_name, {})
+        brief = agent_project_dir(config, spec) / "PROJECT-CONTEXT.md"
+        if brief.is_file():
+            prompt = ("Before anything else, read PROJECT-CONTEXT.md in this "
+                      "project folder - it is the handover brief for this "
+                      "project - then continue with the message below.\n\n"
+                      + prompt)
+            log(f"#{number:03d} -> {agent_name}: first turn, PROJECT-CONTEXT.md brief noted")
     try:
         reply, new_session = call_agent(config, agent_name, prompt, session_id)
         if new_session:
@@ -388,7 +419,10 @@ def main() -> int:
     lock_path.write_text(str(os.getpid()), encoding="utf-8")
 
     poll = int(config.get("poll_seconds", 15))
-    log(f"Bridge started. Mailbox: {repo} | project: {config['project_dir']} | poll: {poll}s")
+    seats = ", ".join(
+        f"{name} -> {agent_project_dir(config, spec)}"
+        for name, spec in sorted(agents_config(config).items()))
+    log(f"Bridge started. Mailbox: {repo} | seats: {seats} | poll: {poll}s")
     try:
         while True:
             git_sync_in(repo)

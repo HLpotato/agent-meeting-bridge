@@ -5,6 +5,7 @@ Also appends every invocation to calls.log next to this file, so tests can
 prove a message was never run twice."""
 
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -16,7 +17,8 @@ resumed = "--resume" in args
 
 here = Path(__file__).resolve().parent
 with open(here / "calls.log", "a", encoding="utf-8") as f:
-    f.write(json.dumps({"agent": "claude", "prompt": prompt, "resumed": resumed}) + "\n")
+    f.write(json.dumps({"agent": "claude", "prompt": prompt, "resumed": resumed,
+                        "cwd": os.getcwd()}) + "\n")
 
 print(json.dumps({
     "result": f"Fake reply. Prompt was: {prompt} (resumed={resumed})",
