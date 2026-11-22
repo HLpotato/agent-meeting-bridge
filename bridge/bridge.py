@@ -255,6 +255,11 @@ def call_agent(config: dict, agent_name: str, prompt: str,
     adapter = str(spec.get("adapter", agent_name)).lower()
     command = str(spec.get("command", agent_name))
     cmd = [command, "-p", prompt, "--output-format", "json"]
+    if adapter == "claude":
+        # Henry's ruling (22 Nov 2026, Spike 2): fail fast on anything not
+        # allowlisted instead of hanging on a prompt nobody can answer
+        # in a headless bridge turn.
+        cmd += ["--permission-mode", "dontAsk"]
     if session_id:
         cmd += ["--conversation", session_id] if adapter == "agy" else ["--resume", session_id]
     timeout = int(config.get("turn_timeout_seconds", 1800))
