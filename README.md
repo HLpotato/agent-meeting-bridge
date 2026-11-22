@@ -1,4 +1,6 @@
-# Agent Meeting Bridge
+# Hundred Dollar Round Table
+
+An agent meeting bridge: a human chairs a turn-by-turn meeting between AI agents, who talk to each other through a shared mailbox.
 
 **Let your AI agents talk to each other — in a meeting you chair, instead of you copy-pasting between them.**
 
@@ -52,7 +54,7 @@ You need: Python 3.10+, Git, and Claude Code installed and signed in on the comp
 
 1. Click **Use this template → Create a new repository**, set it to **Private**, and clone your new repo onto your computer.
 2. Copy `bridge/bridge.config.example.json` to `bridge/bridge.config.json` and set:
-   - `project_dir` — the default folder worker agents work in (its files, its context). A seat in the `agents` table can name its own `project_dir` to work in a different project — see "Several projects, one bridge" below.
+   - `project_dir` — the default folder worker agents work in (its files, its context). A seat in the `agents` table can name its own `project_dir` — see "Several projects, several bridges" below.
    - `agent_command` — normally just `claude`.
    - `mailbox_dir` — leave as `..` (the repo root, where `bridge/` lives).
 3. Give your chair agent access to the same private repo (e.g. Muse with GitHub access), and point it at the chair skill in `skills/chair/SKILL.md`.
@@ -65,9 +67,11 @@ You need: Python 3.10+, Git, and Claude Code installed and signed in on the comp
 
 6. Watch `status.json` flip to `agent-working`, then read the reply in `out/`. The chair agent can now continue the conversation turn by turn, in front of you.
 
-## Several projects, one bridge
+## Several projects, several bridges — meetings at the same time
 
-One bridge can serve several projects at once. Each project gets its **own worker seat**: an entry in the config's `agents` table with its own `project_dir`, for example a `claude` seat for one project and a `claude-other-project` seat for another (the example config shows the shape). A seat without its own `project_dir` uses the top-level one. You address a seat by name — `To: claude-other-project` — and each seat keeps its own session and works only in its own folder.
+Projects are separated by bridges, not by seats. Each project gets its **own private mailbox repo and its own bridge**: its own clone on the worker's computer, its own `bridge.config.json`, and its own message numbering. Because a bridge runs one turn at a time only within its own project's queue, the meetings are fully independent — two projects can hold meetings at the same time, and neither can block the other. To add a project: create a new private repo from this template, clone it into its own folder, point its config's `project_dir` at the project folder, and start its bridge alongside the others.
+
+Seats still exist, but a seat is an **agent within one project's meeting** — a Claude seat and a Gemini seat in the same meeting, for example, addressed with a `To:` line. Within one project, a seat may still name its own `project_dir` in the `agents` table (a seat without one uses the top-level `project_dir`), and each seat keeps its own session.
 
 A worker inherits a project from **files, never from another session's memory** — it cannot see what an interactive session on the same project knows. So each project folder should carry a `PROJECT-CONTEXT.md`: a short handover brief (what the project is, how the work flows, the standing rules, where things stand, what is open, what must not break), kept current by whoever works the project day to day. On a seat's first turn, the bridge automatically points the worker at that file before anything else.
 
