@@ -23,6 +23,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import subprocess
 import sys
 import time
@@ -89,18 +90,51 @@ def git(args: list[str], cwd: Path, check: bool = False) -> subprocess.Completed
 
 
 def git_sync_in(repo: Path) -> None:
-    """Pull new messages. No remote (local test) is fine - skip quietly."""
-    if git(["remote"], cwd=repo).stdout.strip():
-        git(["pull", "--ff-only"], cwd=repo, check=True)
+    """Pull new messages, self-healing (v0.3.2). No remote is fine - skip.
+
+    The mailbox has two writers (the chair pushes messages; this bridge
+    pushes replies/status), so the histories can diverge when their pushes
+    race. Fast-forward-only pulling then fails forever ("Not possible to
+    fast-forward, aborting" every cycle, the meeting silently wedged).
+    Instead: fetch, fast-forward when simply behind, and when diverged
+    rebase the local commits onto origin - origin wins conflicts, which
+    is safe here: only the bridge ever writes out/, the chair owns in/,
+    and status.json is rewritten by the bridge on every turn anyway.
+    """
+    if not git(["remote"], cwd=repo).stdout.strip():
+        return
+    branch = git(["rev-parse", "--abbrev-ref", "HEAD"], cwd=repo).stdout.strip() or "main"
+    if git(["fetch", "origin"], cwd=repo, check=True).returncode != 0:
+        return
+    remote_ref = f"origin/{branch}"
+    if git(["rev-parse", "--verify", remote_ref], cwd=repo).returncode != 0:
+        return
+    if git(["merge-base", "--is-ancestor", "HEAD", remote_ref], cwd=repo).returncode == 0:
+        git(["merge", "--ff-only", remote_ref], cwd=repo, check=True)
+    elif git(["merge-base", "--is-ancestor", remote_ref, "HEAD"], cwd=repo).returncode == 0:
+        pass  # up to date, or ahead (our pushes will land on their own)
+    else:
+        log("Mailbox diverged from origin; rebasing local commits onto origin (self-heal)")
+        result = git(["rebase", "-X", "ours", remote_ref], cwd=repo)
+        if result.returncode != 0:
+            git(["rebase", "--abort"], cwd=repo)
+            log(f"git rebase failed; will retry next cycle: {result.stderr.strip()[:300]}")
 
 
 def git_push_out(repo: Path, message: str) -> None:
-    """Commit mailbox changes and push if a remote exists. Best effort."""
+    """Commit mailbox changes and push if a remote exists. Best effort.
+
+    On a rejected push (the chair pushed in the meantime), sync once and
+    retry the push once, so a single race never wedges the meeting.
+    """
     git(["add", "in", "out", "status.json"], cwd=repo)
     if git(["status", "--porcelain"], cwd=repo).stdout.strip():
         git(["commit", "-m", message], cwd=repo, check=True)
     if git(["remote"], cwd=repo).stdout.strip():
-        git(["push"], cwd=repo, check=True)
+        if git(["push"], cwd=repo).returncode != 0:
+            log("Push rejected; syncing and retrying once")
+            git_sync_in(repo)
+            git(["push"], cwd=repo, check=True)
 
 
 def write_status(repo: Path, state: str, number: int | None, detail: str = "") -> None:
@@ -121,6 +155,62 @@ def list_messages(repo: Path) -> list[tuple[int, Path]]:
             if m:
                 found.append((int(m.group(1)), path))
     return sorted(found)
+
+
+def pid_alive(pid: int) -> bool:
+    """Best-effort check whether a process is currently running."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/NH"],
+            capture_output=True, text=True)
+        return str(pid) in result.stdout
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def kill_process_tree(proc: subprocess.Popen) -> None:
+    """Kill a timed-out agent AND its children (v0.3.2).
+
+    subprocess.run's timeout only kills the direct child; agent CLIs spawn
+    grandchildren that inherit the output pipes, which can leave the caller
+    blocked on a dead pipe forever - the bridge then looks alive but never
+    moves again. Kill the whole tree instead.
+    """
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                       capture_output=True)
+    else:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+
+
+def run_agent_cmd(cmd: list[str], cwd: Path, timeout: int,
+                  agent_name: str) -> subprocess.CompletedProcess:
+    """Run an agent CLI with a hard, tree-killing timeout."""
+    proc = subprocess.Popen(cmd, cwd=str(cwd), stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True,
+                            start_new_session=(os.name != "nt"))
+    try:
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        kill_process_tree(proc)
+        try:
+            out, err = proc.communicate(timeout=30)
+        except Exception:
+            out, err = "", ""
+        raise RuntimeError(
+            f"{agent_name} turn timed out after {timeout}s and was killed")
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 def call_agent(config: dict, agent_name: str, prompt: str,
@@ -152,7 +242,8 @@ def call_agent(config: dict, agent_name: str, prompt: str,
     if session_id:
         cmd += ["--conversation", session_id] if adapter == "agy" else ["--resume", session_id]
     timeout = int(config.get("turn_timeout_seconds", 1800))
-    result = run(cmd, cwd=Path(config["project_dir"]).expanduser(), timeout=timeout)
+    result = run_agent_cmd(cmd, cwd=Path(config["project_dir"]).expanduser(),
+                           timeout=timeout, agent_name=agent_name)
     if result.returncode != 0:
         raise RuntimeError(f"{agent_name} command exited {result.returncode}: {result.stderr.strip()[:500]}")
     reply_field = "response" if adapter in ("gemini", "agy") else "result"
@@ -279,9 +370,21 @@ def main() -> int:
 
     lock_path = HERE / "bridge.lock"
     if lock_path.exists():
-        print("Another bridge instance appears to be running (bridge.lock exists).\n"
-              "If you are sure none is, delete bridge.lock and start again.", file=sys.stderr)
-        return 3
+        # Stale-lock self-heal (v0.3.2): a lock left behind by a crashed or
+        # hard-closed bridge must not block the next start forever. If the
+        # PID recorded in the lock is no longer running, clear it and go on.
+        try:
+            lock_pid = int(lock_path.read_text(encoding="utf-8").strip())
+        except Exception:
+            lock_pid = None
+        if lock_pid is not None and pid_alive(lock_pid):
+            print("Another bridge instance appears to be running "
+                  f"(bridge.lock, pid {lock_pid}).\n"
+                  "Close that bridge window first; if you are sure none is "
+                  "running, delete bridge.lock and start again.", file=sys.stderr)
+            return 3
+        log(f"Removing stale bridge.lock (pid {lock_pid} is not running)")
+        lock_path.unlink(missing_ok=True)
     lock_path.write_text(str(os.getpid()), encoding="utf-8")
 
     poll = int(config.get("poll_seconds", 15))
