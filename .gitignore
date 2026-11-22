@@ -1,0 +1,6 @@
+# Your real config and bridge runtime state are local - never share them.
+bridge/bridge.config.json
+bridge/bridge.state.json
+bridge/bridge.lock
+__pycache__/
+*.pyc
